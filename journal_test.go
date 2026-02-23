@@ -113,3 +113,59 @@ func TestJournalEntryJSON(t *testing.T) {
 		t.Errorf("Files: got %d items, want 2", len(decoded.Files))
 	}
 }
+
+func TestParseRsyncFiles(t *testing.T) {
+	output := `sending incremental file list
+Documents/report.pdf
+Documents/notes/meeting.md
+Documents/photos/cat.jpg
+
+sent 1,234 bytes  received 56 bytes  2,580.00 bytes/sec
+total size is 1,048,576  speedup is 812.94
+`
+	files := parseRsyncFiles(output)
+	if len(files) != 3 {
+		t.Fatalf("expected 3 files, got %d: %v", len(files), files)
+	}
+	expected := []string{
+		"Documents/report.pdf",
+		"Documents/notes/meeting.md",
+		"Documents/photos/cat.jpg",
+	}
+	for i, f := range files {
+		if f != expected[i] {
+			t.Errorf("file[%d]: got %q, want %q", i, f, expected[i])
+		}
+	}
+}
+
+func TestParseRsyncFilesEmpty(t *testing.T) {
+	output := `sending incremental file list
+
+sent 100 bytes  received 12 bytes  224.00 bytes/sec
+total size is 0  speedup is 0.00
+`
+	files := parseRsyncFiles(output)
+	if len(files) != 0 {
+		t.Errorf("expected 0 files, got %d: %v", len(files), files)
+	}
+}
+
+func TestParseRsyncBytes(t *testing.T) {
+	output := `Number of files: 50
+Number of files transferred: 3
+Total file size: 10,485,760 bytes
+Total transferred file size: 1,048,576 bytes
+`
+	bytes := parseRsyncBytes(output)
+	if bytes != 1048576 {
+		t.Errorf("expected 1048576 bytes, got %d", bytes)
+	}
+}
+
+func TestParseRsyncBytesNoMatch(t *testing.T) {
+	bytes := parseRsyncBytes("no stats here")
+	if bytes != 0 {
+		t.Errorf("expected 0 bytes, got %d", bytes)
+	}
+}

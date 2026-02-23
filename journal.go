@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -69,4 +71,47 @@ func writeJournalAtomic(path string, entries []JournalEntry) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func parseRsyncFiles(output string) []string {
+	lines := strings.Split(output, "\n")
+	var files []string
+	inFileList := false
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "sending incremental file list") {
+			inFileList = true
+			continue
+		}
+		if inFileList {
+			if line == "" || strings.HasPrefix(line, "sent ") || strings.HasPrefix(line, "total size") {
+				inFileList = false
+				continue
+			}
+			// Skip directory entries (end with /)
+			if strings.HasSuffix(line, "/") {
+				continue
+			}
+			files = append(files, line)
+		}
+	}
+	return files
+}
+
+func parseRsyncBytes(output string) int64 {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Total transferred file size:") {
+			parts := strings.TrimPrefix(line, "Total transferred file size:")
+			parts = strings.TrimSuffix(strings.TrimSpace(parts), "bytes")
+			parts = strings.TrimSpace(parts)
+			parts = strings.ReplaceAll(parts, ",", "")
+			n, err := strconv.ParseInt(parts, 10, 64)
+			if err != nil {
+				return 0
+			}
+			return n
+		}
+	}
+	return 0
 }
