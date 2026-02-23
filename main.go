@@ -401,6 +401,13 @@ func cmdSync(cfg Config, dirs []string, execute bool) {
 	connectWifi(cfg)
 	mountShares(cfg)
 
+	startedAt := time.Now().UTC()
+	var allFiles []string
+	var totalBytes int64
+	var syncErrors []string
+	home, _ := os.UserHomeDir()
+	var dirNames []string
+
 	for _, dir := range dirs {
 		dir = strings.TrimRight(dir, "/")
 		fi, err := os.Stat(dir)
@@ -408,21 +415,53 @@ func cmdSync(cfg Config, dirs []string, execute bool) {
 			warn("Skipping " + dir + " (not a directory)")
 			continue
 		}
-		home, _ := os.UserHomeDir()
 		relPath, err := filepath.Rel(home, dir)
 		if err != nil {
 			relPath = filepath.Base(dir)
 		}
+		dirNames = append(dirNames, "~/"+relPath)
 		dest := filepath.Join(cfg.MountDocs, cfg.DocsSubfolder, relPath)
-		syncDirectory(dir, dest, dryRun)
+		result := syncDirectory(dir, dest, dryRun)
+		allFiles = append(allFiles, result.Files...)
+		totalBytes += result.BytesTransferred
+		if result.Err != nil {
+			syncErrors = append(syncErrors, result.Err.Error())
+		}
 	}
 
 	fmt.Println()
 	if dryRun {
 		info("Dry run complete. Run with --execute to sync for real.")
-	} else {
-		info("All syncs complete")
+		return
 	}
+
+	// Write journal entry (only for real syncs)
+	status := "success"
+	if len(syncErrors) > 0 && len(allFiles) > 0 {
+		status = "partial"
+	} else if len(syncErrors) > 0 {
+		status = "failed"
+	}
+
+	entry := JournalEntry{
+		StartedAt:        startedAt,
+		FinishedAt:       time.Now().UTC(),
+		Directories:      dirNames,
+		Files:            allFiles,
+		FilesTransferred: len(allFiles),
+		BytesTransferred: totalBytes,
+		Status:           status,
+		Errors:           syncErrors,
+	}
+
+	jpath := journalPath()
+	if jpath != "" {
+		if err := appendJournal(jpath, entry); err != nil {
+			fail("Failed to write sync journal: " + err.Error())
+		}
+	}
+
+	info("All syncs complete")
 }
 
 func cmdStatus(cfg Config) {
