@@ -496,6 +496,29 @@ func cmdStatus(cfg Config) {
 	} else {
 		warn(cfg.MountPics + " not mounted")
 	}
+
+	// Show last sync from journal
+	jpath := journalPath()
+	if jpath != "" {
+		entries, err := loadJournal(jpath)
+		if err == nil && len(entries) > 0 {
+			last := entries[len(entries)-1]
+			fmt.Println()
+			fmt.Println("=== Last Sync ===")
+			fmt.Printf("  Time:     %s (%s)\n",
+				last.StartedAt.Local().Format("2006-01-02 15:04"),
+				formatTimeAgo(last.StartedAt))
+			fmt.Printf("  Dirs:     %s\n", strings.Join(last.Directories, ", "))
+			fmt.Printf("  Files:    %d files, %s transferred\n",
+				last.FilesTransferred, formatBytes(last.BytesTransferred))
+			fmt.Printf("  Status:   %s\n", last.Status)
+			if len(last.Errors) > 0 {
+				for _, e := range last.Errors {
+					fmt.Printf("  Error:    %s\n", e)
+				}
+			}
+		}
+	}
 }
 
 func usage() {
