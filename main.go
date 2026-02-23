@@ -428,10 +428,14 @@ Commands:
   status      Show connection and mount status
   help        Show this help
 
-Sync always copies FROM local TO NAS. Examples:
-  nas-sync sync                        Dry-run ~/Documents -> NAS
+Sync always copies FROM local TO NAS. Directories are mapped by their
+path relative to $HOME, under the docs_subfolder from config.toml.
+  e.g. ~/repos/project -> <mount_docs>/<docs_subfolder>/repos/project
+
+Examples:
+  nas-sync sync                        Dry-run default dirs -> NAS
   nas-sync sync ~/Documents ~/repos    Dry-run specific dirs -> NAS
-  nas-sync sync --execute              Copy ~/Documents -> NAS for real
+  nas-sync sync --execute              Copy default dirs -> NAS for real
 `)
 }
 
