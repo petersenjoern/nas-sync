@@ -30,6 +30,13 @@ nas-sync sync                          Dry-run: show what would be copied (local
 nas-sync sync --execute                Copy files from local machine to NAS
 nas-sync sync ~/Documents ~/repos      Dry-run specific dirs -> NAS
 nas-sync sync --execute ~/Documents    Copy ~/Documents -> NAS for real
+```
+
+Each directory is mapped to the NAS by its path relative to `$HOME`, under the `docs_subfolder` set in `config.toml`. For example, with `docs_subfolder = "MyName"`:
+
+```
+~/Documents                -> /mnt/nas-docs/MyName/Documents
+~/repos/personal/nas-sync  -> /mnt/nas-docs/MyName/repos/personal/nas-sync
 nas-sync status                        Show connection and mount status
 nas-sync help                          Show help
 ```
