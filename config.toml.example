@@ -1,0 +1,7 @@
+nas_ip = "192.168.1.100"
+nas_user = "your-username"
+mount_home = "/mnt/nas"
+mount_docs = "/mnt/nas-docs"
+mount_pics = "/mnt/nas-pics"
+default_sync_dirs = ["~/Documents"]
+docs_subfolder = "YourName"
