@@ -313,7 +313,12 @@ func syncDirectory(src string, dst string, dryRun bool) {
 	} else {
 		if dryRun {
 			warn("cp does not support dry-run — listing files that would be copied:")
-			run("find", src, "-newer", dst, "-type", "f")
+			if _, err := os.Stat(dst); err != nil {
+				info("Destination does not exist yet — all files would be copied:")
+				run("find", src, "-type", "f")
+			} else {
+				run("find", src, "-newer", dst, "-type", "f")
+			}
 			return
 		}
 		if err := run("cp", "-ruv", src+"/.", dst+"/"); err != nil {
