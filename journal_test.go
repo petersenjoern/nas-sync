@@ -169,3 +169,46 @@ func TestParseRsyncBytesNoMatch(t *testing.T) {
 		t.Errorf("expected 0 bytes, got %d", bytes)
 	}
 }
+
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		input int64
+		want  string
+	}{
+		{0, "0 B"},
+		{500, "500 B"},
+		{1024, "1.0 KB"},
+		{1536, "1.5 KB"},
+		{1048576, "1.0 MB"},
+		{1073741824, "1.0 GB"},
+		{1342177280, "1.2 GB"},
+	}
+	for _, tt := range tests {
+		got := formatBytes(tt.input)
+		if got != tt.want {
+			t.Errorf("formatBytes(%d) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestFormatTimeAgo(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		input time.Time
+		want  string
+	}{
+		{now.Add(-30 * time.Second), "just now"},
+		{now.Add(-5 * time.Minute), "5 minutes ago"},
+		{now.Add(-1 * time.Minute), "1 minute ago"},
+		{now.Add(-2 * time.Hour), "2 hours ago"},
+		{now.Add(-1 * time.Hour), "1 hour ago"},
+		{now.Add(-36 * time.Hour), "1 day ago"},
+		{now.Add(-72 * time.Hour), "3 days ago"},
+	}
+	for _, tt := range tests {
+		got := formatTimeAgo(tt.input)
+		if got != tt.want {
+			t.Errorf("formatTimeAgo(%v) = %q, want %q", now.Sub(tt.input), got, tt.want)
+		}
+	}
+}
