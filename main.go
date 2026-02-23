@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -291,42 +292,85 @@ func unmountShares(cfg Config) {
 
 // --- Sync ---
 
-func syncDirectory(src string, dst string, dryRun bool) {
+func syncDirectory(src string, dst string, dryRun bool) SyncResult {
 	if !dryRun {
 		if err := os.MkdirAll(dst, 0o755); err != nil {
 			fail("Cannot create destination " + dst + ": " + err.Error())
-			return
+			return SyncResult{Err: err}
 		}
 	}
 
 	info("Syncing " + src + " -> " + dst)
 
 	if _, err := exec.LookPath("rsync"); err == nil {
-		args := []string{"-avh", "--progress"}
+		args := []string{"-avh", "--itemize-changes", "--stats"}
 		if dryRun {
 			args = append(args, "--dry-run")
 		}
 		args = append(args, src+"/", dst+"/")
-		if err := run("rsync", args...); err != nil {
-			fail("rsync failed: " + err.Error())
+
+		fmt.Printf("%s[run]%s rsync %s\n", yellow, reset, strings.Join(args, " "))
+		cmd := exec.Command("rsync", args...)
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+
+		// Capture stdout while also displaying to terminal
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return SyncResult{Err: err}
 		}
-	} else {
-		if dryRun {
-			warn("cp does not support dry-run — listing files that would be copied:")
-			if _, err := os.Stat(dst); err != nil {
-				info("Destination does not exist yet — all files would be copied:")
-				run("find", src, "-type", "f")
-			} else {
-				run("find", src, "-newer", dst, "-type", "f")
+		if err := cmd.Start(); err != nil {
+			return SyncResult{Err: err}
+		}
+
+		var output strings.Builder
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Println(line)
+			output.WriteString(line + "\n")
+		}
+
+		cmdErr := cmd.Wait()
+		captured := output.String()
+		files := parseRsyncFiles(captured)
+		bytes := parseRsyncBytes(captured)
+
+		info("Done: " + filepath.Base(src))
+
+		if cmdErr != nil {
+			return SyncResult{
+				Files:            files,
+				FilesTransferred: len(files),
+				BytesTransferred: bytes,
+				Err:              cmdErr,
 			}
-			return
 		}
-		if err := run("cp", "-ruv", src+"/.", dst+"/"); err != nil {
-			fail("cp failed: " + err.Error())
+		return SyncResult{
+			Files:            files,
+			FilesTransferred: len(files),
+			BytesTransferred: bytes,
 		}
 	}
 
+	// cp fallback
+	if dryRun {
+		warn("cp does not support dry-run — listing files that would be copied:")
+		if _, err := os.Stat(dst); err != nil {
+			info("Destination does not exist yet — all files would be copied:")
+			run("find", src, "-type", "f")
+		} else {
+			run("find", src, "-newer", dst, "-type", "f")
+		}
+		return SyncResult{}
+	}
+	if err := run("cp", "-ruv", src+"/.", dst+"/"); err != nil {
+		fail("cp failed: " + err.Error())
+		return SyncResult{Err: err}
+	}
+
 	info("Done: " + filepath.Base(src))
+	return SyncResult{}
 }
 
 // --- Commands ---
@@ -358,6 +402,13 @@ func cmdSync(cfg Config, dirs []string, execute bool) {
 	connectWifi(cfg)
 	mountShares(cfg)
 
+	startedAt := time.Now().UTC()
+	var allFiles []string
+	var totalBytes int64
+	var syncErrors []string
+	home, _ := os.UserHomeDir()
+	var dirNames []string
+
 	for _, dir := range dirs {
 		dir = strings.TrimRight(dir, "/")
 		fi, err := os.Stat(dir)
@@ -365,24 +416,56 @@ func cmdSync(cfg Config, dirs []string, execute bool) {
 			warn("Skipping " + dir + " (not a directory)")
 			continue
 		}
-		home, _ := os.UserHomeDir()
 		relPath, err := filepath.Rel(home, dir)
 		if err != nil {
 			relPath = filepath.Base(dir)
 		}
+		dirNames = append(dirNames, "~/"+relPath)
 		dest := filepath.Join(cfg.MountDocs, cfg.DocsSubfolder, relPath)
-		syncDirectory(dir, dest, dryRun)
+		result := syncDirectory(dir, dest, dryRun)
+		allFiles = append(allFiles, result.Files...)
+		totalBytes += result.BytesTransferred
+		if result.Err != nil {
+			syncErrors = append(syncErrors, result.Err.Error())
+		}
 	}
 
 	fmt.Println()
 	if dryRun {
 		info("Dry run complete. Run with --execute to sync for real.")
-	} else {
-		info("All syncs complete")
+		return
 	}
+
+	// Write journal entry (only for real syncs)
+	status := "success"
+	if len(syncErrors) > 0 && len(allFiles) > 0 {
+		status = "partial"
+	} else if len(syncErrors) > 0 {
+		status = "failed"
+	}
+
+	entry := JournalEntry{
+		StartedAt:        startedAt,
+		FinishedAt:       time.Now().UTC(),
+		Directories:      dirNames,
+		Files:            allFiles,
+		FilesTransferred: len(allFiles),
+		BytesTransferred: totalBytes,
+		Status:           status,
+		Errors:           syncErrors,
+	}
+
+	jpath := journalPath()
+	if jpath != "" {
+		if err := appendJournal(jpath, entry); err != nil {
+			fail("Failed to write sync journal: " + err.Error())
+		}
+	}
+
+	info("All syncs complete")
 }
 
-func cmdStatus(cfg Config) {
+func cmdStatus(cfg Config, history string) {
 	fmt.Println("=== NAS Connection Status ===")
 	fmt.Println()
 
@@ -414,19 +497,111 @@ func cmdStatus(cfg Config) {
 	} else {
 		warn(cfg.MountPics + " not mounted")
 	}
+
+	// Show last sync from journal
+	jpath := journalPath()
+	if jpath != "" {
+		entries, err := loadJournal(jpath)
+		if err == nil && len(entries) > 0 {
+			last := entries[len(entries)-1]
+			fmt.Println()
+			fmt.Println("=== Last Sync ===")
+			fmt.Printf("  Time:     %s (%s)\n",
+				last.StartedAt.Local().Format("2006-01-02 15:04"),
+				formatTimeAgo(last.StartedAt))
+			fmt.Printf("  Dirs:     %s\n", strings.Join(last.Directories, ", "))
+			fmt.Printf("  Files:    %d files, %s transferred\n",
+				last.FilesTransferred, formatBytes(last.BytesTransferred))
+			fmt.Printf("  Status:   %s\n", last.Status)
+			if len(last.Errors) > 0 {
+				for _, e := range last.Errors {
+					fmt.Printf("  Error:    %s\n", e)
+				}
+			}
+		}
+	}
+
+	if history != "" {
+		jpath := journalPath()
+		if jpath == "" {
+			return
+		}
+		entries, err := loadJournal(jpath)
+		if err != nil || len(entries) == 0 {
+			warn("No sync history found")
+			return
+		}
+
+		if history == "list" {
+			// Show table of last 10
+			fmt.Println()
+			fmt.Println("=== Sync History (last 10) ===")
+			fmt.Printf("  %-20s %-20s %6s %10s  %s\n", "DATE", "DIRS", "FILES", "SIZE", "STATUS")
+			start := len(entries) - 10
+			if start < 0 {
+				start = 0
+			}
+			for i := len(entries) - 1; i >= start; i-- {
+				e := entries[i]
+				dirs := strings.Join(e.Directories, ", ")
+				if len(dirs) > 18 {
+					dirs = dirs[:18] + ".."
+				}
+				statusStr := e.Status
+				if len(e.Errors) > 0 {
+					statusStr += fmt.Sprintf(" (%d error)", len(e.Errors))
+				}
+				fmt.Printf("  %-20s %-20s %6d %10s  %s\n",
+					e.StartedAt.Local().Format("2006-01-02 15:04"),
+					dirs,
+					e.FilesTransferred,
+					formatBytes(e.BytesTransferred),
+					statusStr)
+			}
+		} else {
+			// Show detail for entry N
+			n, err := strconv.Atoi(history)
+			if err != nil || n < 1 || n > len(entries) {
+				fail(fmt.Sprintf("Invalid history entry: %s (valid range: 1-%d)", history, len(entries)))
+				return
+			}
+			e := entries[len(entries)-n]
+			duration := e.FinishedAt.Sub(e.StartedAt).Truncate(time.Second)
+			fmt.Println()
+			fmt.Printf("=== Sync #%d (%s) ===\n", n,
+				e.StartedAt.Local().Format("2006-01-02 15:04"))
+			fmt.Printf("  Status: %s | %d files | %s | %s\n",
+				e.Status, e.FilesTransferred, formatBytes(e.BytesTransferred), duration)
+			if len(e.Errors) > 0 {
+				fmt.Println()
+				fmt.Println("  Errors:")
+				for _, err := range e.Errors {
+					fmt.Printf("    %s\n", err)
+				}
+			}
+			if len(e.Files) > 0 {
+				fmt.Println()
+				fmt.Println("  Files:")
+				for _, f := range e.Files {
+					fmt.Printf("    %s\n", f)
+				}
+			}
+		}
+	}
 }
 
 func usage() {
 	fmt.Print(`Usage: nas-sync [command]
 
 Commands:
-  up          Connect wifi to NAS subnet and mount shares
-  down        Unmount shares
-  sync        Dry-run: show what would be copied (local -> NAS)
-  sync --execute
-              Copy files from local machine to NAS
-  status      Show connection and mount status
-  help        Show this help
+  up                    Connect wifi to NAS subnet and mount shares
+  down                  Unmount shares
+  sync                  Dry-run: show what would be copied (local -> NAS)
+  sync --execute        Copy files from local machine to NAS
+  status                Show connection, mount status, and last sync
+  status --history      Show table of recent sync runs
+  status --history N    Show full detail of sync run #N
+  help                  Show this help
 
 Sync always copies FROM local TO NAS. Directories are mapped by their
 path relative to $HOME, under the docs_subfolder from config.toml.
@@ -436,6 +611,8 @@ Examples:
   nas-sync sync                        Dry-run default dirs -> NAS
   nas-sync sync ~/Documents ~/repos    Dry-run specific dirs -> NAS
   nas-sync sync --execute              Copy default dirs -> NAS for real
+  nas-sync status --history            View last 10 sync runs
+  nas-sync status --history 1          View details of most recent sync
 `)
 }
 
@@ -475,7 +652,18 @@ func main() {
 		}
 		cmdSync(cfg, filtered, execute)
 	case "status":
-		cmdStatus(cfg)
+		args := os.Args[2:]
+		historyArg := ""
+		for i, a := range args {
+			if a == "--history" {
+				if i+1 < len(args) {
+					historyArg = args[i+1]
+				} else {
+					historyArg = "list"
+				}
+			}
+		}
+		cmdStatus(cfg, historyArg)
 	default:
 		fail("Unknown command: " + cmd)
 		usage()
