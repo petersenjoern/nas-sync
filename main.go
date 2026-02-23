@@ -365,8 +365,12 @@ func cmdSync(cfg Config, dirs []string, execute bool) {
 			warn("Skipping " + dir + " (not a directory)")
 			continue
 		}
-		dirname := filepath.Base(dir)
-		dest := filepath.Join(cfg.MountDocs, cfg.DocsSubfolder, dirname)
+		home, _ := os.UserHomeDir()
+		relPath, err := filepath.Rel(home, dir)
+		if err != nil {
+			relPath = filepath.Base(dir)
+		}
+		dest := filepath.Join(cfg.MountDocs, cfg.DocsSubfolder, relPath)
 		syncDirectory(dir, dest, dryRun)
 	}
 
