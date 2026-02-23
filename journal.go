@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+type SyncResult struct {
+	Files            []string
+	FilesTransferred int
+	BytesTransferred int64
+	Err              error
+}
+
 type JournalEntry struct {
 	StartedAt        time.Time `json:"started_at"`
 	FinishedAt       time.Time `json:"finished_at"`

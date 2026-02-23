@@ -291,42 +291,85 @@ func unmountShares(cfg Config) {
 
 // --- Sync ---
 
-func syncDirectory(src string, dst string, dryRun bool) {
+func syncDirectory(src string, dst string, dryRun bool) SyncResult {
 	if !dryRun {
 		if err := os.MkdirAll(dst, 0o755); err != nil {
 			fail("Cannot create destination " + dst + ": " + err.Error())
-			return
+			return SyncResult{Err: err}
 		}
 	}
 
 	info("Syncing " + src + " -> " + dst)
 
 	if _, err := exec.LookPath("rsync"); err == nil {
-		args := []string{"-avh", "--progress"}
+		args := []string{"-avh", "--itemize-changes", "--stats"}
 		if dryRun {
 			args = append(args, "--dry-run")
 		}
 		args = append(args, src+"/", dst+"/")
-		if err := run("rsync", args...); err != nil {
-			fail("rsync failed: " + err.Error())
+
+		fmt.Printf("%s[run]%s rsync %s\n", yellow, reset, strings.Join(args, " "))
+		cmd := exec.Command("rsync", args...)
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+
+		// Capture stdout while also displaying to terminal
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return SyncResult{Err: err}
 		}
-	} else {
-		if dryRun {
-			warn("cp does not support dry-run — listing files that would be copied:")
-			if _, err := os.Stat(dst); err != nil {
-				info("Destination does not exist yet — all files would be copied:")
-				run("find", src, "-type", "f")
-			} else {
-				run("find", src, "-newer", dst, "-type", "f")
+		if err := cmd.Start(); err != nil {
+			return SyncResult{Err: err}
+		}
+
+		var output strings.Builder
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Println(line)
+			output.WriteString(line + "\n")
+		}
+
+		cmdErr := cmd.Wait()
+		captured := output.String()
+		files := parseRsyncFiles(captured)
+		bytes := parseRsyncBytes(captured)
+
+		info("Done: " + filepath.Base(src))
+
+		if cmdErr != nil {
+			return SyncResult{
+				Files:            files,
+				FilesTransferred: len(files),
+				BytesTransferred: bytes,
+				Err:              cmdErr,
 			}
-			return
 		}
-		if err := run("cp", "-ruv", src+"/.", dst+"/"); err != nil {
-			fail("cp failed: " + err.Error())
+		return SyncResult{
+			Files:            files,
+			FilesTransferred: len(files),
+			BytesTransferred: bytes,
 		}
 	}
 
+	// cp fallback
+	if dryRun {
+		warn("cp does not support dry-run — listing files that would be copied:")
+		if _, err := os.Stat(dst); err != nil {
+			info("Destination does not exist yet — all files would be copied:")
+			run("find", src, "-type", "f")
+		} else {
+			run("find", src, "-newer", dst, "-type", "f")
+		}
+		return SyncResult{}
+	}
+	if err := run("cp", "-ruv", src+"/.", dst+"/"); err != nil {
+		fail("cp failed: " + err.Error())
+		return SyncResult{Err: err}
+	}
+
 	info("Done: " + filepath.Base(src))
+	return SyncResult{}
 }
 
 // --- Commands ---
