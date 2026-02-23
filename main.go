@@ -594,13 +594,14 @@ func usage() {
 	fmt.Print(`Usage: nas-sync [command]
 
 Commands:
-  up          Connect wifi to NAS subnet and mount shares
-  down        Unmount shares
-  sync        Dry-run: show what would be copied (local -> NAS)
-  sync --execute
-              Copy files from local machine to NAS
-  status      Show connection and mount status
-  help        Show this help
+  up                    Connect wifi to NAS subnet and mount shares
+  down                  Unmount shares
+  sync                  Dry-run: show what would be copied (local -> NAS)
+  sync --execute        Copy files from local machine to NAS
+  status                Show connection, mount status, and last sync
+  status --history      Show table of recent sync runs
+  status --history N    Show full detail of sync run #N
+  help                  Show this help
 
 Sync always copies FROM local TO NAS. Directories are mapped by their
 path relative to $HOME, under the docs_subfolder from config.toml.
@@ -610,6 +611,8 @@ Examples:
   nas-sync sync                        Dry-run default dirs -> NAS
   nas-sync sync ~/Documents ~/repos    Dry-run specific dirs -> NAS
   nas-sync sync --execute              Copy default dirs -> NAS for real
+  nas-sync status --history            View last 10 sync runs
+  nas-sync status --history 1          View details of most recent sync
 `)
 }
 
