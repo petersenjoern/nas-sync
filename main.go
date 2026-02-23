@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -464,7 +465,7 @@ func cmdSync(cfg Config, dirs []string, execute bool) {
 	info("All syncs complete")
 }
 
-func cmdStatus(cfg Config) {
+func cmdStatus(cfg Config, history string) {
 	fmt.Println("=== NAS Connection Status ===")
 	fmt.Println()
 
@@ -515,6 +516,74 @@ func cmdStatus(cfg Config) {
 			if len(last.Errors) > 0 {
 				for _, e := range last.Errors {
 					fmt.Printf("  Error:    %s\n", e)
+				}
+			}
+		}
+	}
+
+	if history != "" {
+		jpath := journalPath()
+		if jpath == "" {
+			return
+		}
+		entries, err := loadJournal(jpath)
+		if err != nil || len(entries) == 0 {
+			warn("No sync history found")
+			return
+		}
+
+		if history == "list" {
+			// Show table of last 10
+			fmt.Println()
+			fmt.Println("=== Sync History (last 10) ===")
+			fmt.Printf("  %-20s %-20s %6s %10s  %s\n", "DATE", "DIRS", "FILES", "SIZE", "STATUS")
+			start := len(entries) - 10
+			if start < 0 {
+				start = 0
+			}
+			for i := len(entries) - 1; i >= start; i-- {
+				e := entries[i]
+				dirs := strings.Join(e.Directories, ", ")
+				if len(dirs) > 18 {
+					dirs = dirs[:18] + ".."
+				}
+				statusStr := e.Status
+				if len(e.Errors) > 0 {
+					statusStr += fmt.Sprintf(" (%d error)", len(e.Errors))
+				}
+				fmt.Printf("  %-20s %-20s %6d %10s  %s\n",
+					e.StartedAt.Local().Format("2006-01-02 15:04"),
+					dirs,
+					e.FilesTransferred,
+					formatBytes(e.BytesTransferred),
+					statusStr)
+			}
+		} else {
+			// Show detail for entry N
+			n, err := strconv.Atoi(history)
+			if err != nil || n < 1 || n > len(entries) {
+				fail(fmt.Sprintf("Invalid history entry: %s (valid range: 1-%d)", history, len(entries)))
+				return
+			}
+			e := entries[len(entries)-n]
+			duration := e.FinishedAt.Sub(e.StartedAt).Truncate(time.Second)
+			fmt.Println()
+			fmt.Printf("=== Sync #%d (%s) ===\n", n,
+				e.StartedAt.Local().Format("2006-01-02 15:04"))
+			fmt.Printf("  Status: %s | %d files | %s | %s\n",
+				e.Status, e.FilesTransferred, formatBytes(e.BytesTransferred), duration)
+			if len(e.Errors) > 0 {
+				fmt.Println()
+				fmt.Println("  Errors:")
+				for _, err := range e.Errors {
+					fmt.Printf("    %s\n", err)
+				}
+			}
+			if len(e.Files) > 0 {
+				fmt.Println()
+				fmt.Println("  Files:")
+				for _, f := range e.Files {
+					fmt.Printf("    %s\n", f)
 				}
 			}
 		}
@@ -580,7 +649,18 @@ func main() {
 		}
 		cmdSync(cfg, filtered, execute)
 	case "status":
-		cmdStatus(cfg)
+		args := os.Args[2:]
+		historyArg := ""
+		for i, a := range args {
+			if a == "--history" {
+				if i+1 < len(args) {
+					historyArg = args[i+1]
+				} else {
+					historyArg = "list"
+				}
+			}
+		}
+		cmdStatus(cfg, historyArg)
 	default:
 		fail("Unknown command: " + cmd)
 		usage()
